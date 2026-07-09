@@ -1,0 +1,27 @@
+# Markdown files are ignored, except the README
+*.md
+!README.md
+
+# Binaries
+/sched
+/bin/
+*.exe
+*.test
+*.out
+
+# SQLite databases
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Go
+/vendor/
+coverage.*
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

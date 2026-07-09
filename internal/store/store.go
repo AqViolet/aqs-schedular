@@ -51,6 +51,7 @@ type Store interface {
 	SetJobStatus(context.Context, string, string) error
 	DeleteJob(context.Context, string) error
 	CreateRun(context.Context, Run) error
+	ScheduleJobRun(context.Context, string, Run, *time.Time) error
 	GetRun(context.Context, string) (Run, error)
 	ListRuns(context.Context, string) ([]Run, error)
 	UpdateRun(context.Context, Run) error

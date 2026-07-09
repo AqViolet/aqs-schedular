@@ -204,6 +204,27 @@ func (s *SQLite) CreateRun(ctx context.Context, r Run) error {
 	return err
 }
 
+func (s *SQLite) ScheduleJobRun(ctx context.Context, jobID string, r Run, next *time.Time) error {
+	if r.CreatedAt.IsZero() {
+		r.CreatedAt = time.Now()
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `INSERT INTO runs (`+runColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.JobID, r.Status, r.Attempt, r.ScheduledAt.Unix(), timePtrUnix(r.StartedAt), timePtrUnix(r.FinishedAt), intPtr(r.ExitCode), int64Ptr(r.DurationMS), nullString(r.Error), r.CreatedAt.Unix())
+	if err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE jobs SET next_run_at=?, updated_at=? WHERE id=?`, unixPtr(next), time.Now().Unix(), jobID)
+	if err := requireRow(res, err); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *SQLite) GetRun(ctx context.Context, id string) (Run, error) {
 	return scanRun(s.db.QueryRowContext(ctx, `SELECT `+runColumns+` FROM runs WHERE id=?`, id))
 }

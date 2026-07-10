@@ -229,6 +229,35 @@ func (s *SQLite) GetRun(ctx context.Context, id string) (Run, error) {
 	return scanRun(s.db.QueryRowContext(ctx, `SELECT `+runColumns+` FROM runs WHERE id=?`, id))
 }
 
+func (s *SQLite) PendingRuns(ctx context.Context, limit int) ([]Run, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT `+runColumns+` FROM runs WHERE status='pending' AND scheduled_at <= ? ORDER BY scheduled_at, created_at LIMIT ?`, time.Now().Unix(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var runs []Run
+	for rows.Next() {
+		r, err := scanRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		runs = append(runs, r)
+	}
+	return runs, rows.Err()
+}
+
+func (s *SQLite) ClaimRun(ctx context.Context, id string, started time.Time) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE runs SET status='running', started_at=? WHERE id=? AND status='pending' AND scheduled_at <= ?`, started.Unix(), id, started.Unix())
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
 func (s *SQLite) ListRuns(ctx context.Context, jobID string) ([]Run, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+runColumns+` FROM runs WHERE job_id=? ORDER BY scheduled_at DESC, created_at DESC`, jobID)
 	if err != nil {

@@ -249,6 +249,23 @@ func (s *SQLite) PendingRuns(ctx context.Context, limit int) ([]Run, error) {
 	return runs, rows.Err()
 }
 
+func (s *SQLite) RunningRuns(ctx context.Context) ([]Run, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+runColumns+` FROM runs WHERE status='running' ORDER BY started_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var runs []Run
+	for rows.Next() {
+		r, err := scanRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		runs = append(runs, r)
+	}
+	return runs, rows.Err()
+}
+
 func (s *SQLite) ClaimRun(ctx context.Context, id string, started time.Time) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `UPDATE runs SET status='running', started_at=? WHERE id=? AND status='pending' AND scheduled_at <= ?`, started.Unix(), id, started.Unix())
 	if err != nil {

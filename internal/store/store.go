@@ -54,6 +54,7 @@ type Store interface {
 	ScheduleJobRun(context.Context, string, Run, *time.Time) error
 	GetRun(context.Context, string) (Run, error)
 	PendingRuns(context.Context, int) ([]Run, error)
+	RunningRuns(context.Context) ([]Run, error)
 	ClaimRun(context.Context, string, time.Time) (bool, error)
 	ListRuns(context.Context, string) ([]Run, error)
 	UpdateRun(context.Context, Run) error

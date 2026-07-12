@@ -19,16 +19,17 @@ import (
 const logChunkSize = 1024
 
 type Pool struct {
-	store       store.Store
-	logger      *slog.Logger
-	concurrency int
-	poll        time.Duration
-	stop        chan struct{}
-	done        chan struct{}
-	cancelExec  context.CancelFunc
-	stopOnce    sync.Once
-	rngMu       sync.Mutex
-	rng         *mrand.Rand
+	store        store.Store
+	logger       *slog.Logger
+	concurrency  int
+	poll         time.Duration
+	stop         chan struct{}
+	done         chan struct{}
+	dispatchDone chan struct{}
+	cancelExec   context.CancelFunc
+	stopOnce     sync.Once
+	rngMu        sync.Mutex
+	rng          *mrand.Rand
 }
 
 func New(st store.Store, concurrency int, logger *slog.Logger) *Pool {
@@ -76,9 +77,9 @@ func (p *Pool) Start() {
 			}
 		}()
 	}
-	dispatchDone := make(chan struct{})
+	p.dispatchDone = make(chan struct{})
 	go func() {
-		defer close(dispatchDone)
+		defer close(p.dispatchDone)
 		defer close(jobs)
 		for {
 			select {
@@ -117,14 +118,21 @@ func (p *Pool) Start() {
 		}
 	}()
 	go func() {
-		<-dispatchDone
+		<-p.dispatchDone
 		workers.Wait()
 		close(p.done)
 	}()
 }
 
-func (p *Pool) Shutdown(ctx context.Context) error {
+func (p *Pool) Stop() {
 	p.stopOnce.Do(func() { close(p.stop) })
+	if p.dispatchDone != nil {
+		<-p.dispatchDone
+	}
+}
+
+func (p *Pool) Shutdown(ctx context.Context) error {
+	p.Stop()
 	select {
 	case <-p.done:
 		return nil
@@ -138,6 +146,11 @@ func (p *Pool) Shutdown(ctx context.Context) error {
 }
 
 func (p *Pool) process(parent context.Context, run store.Run) {
+	select {
+	case <-p.stop:
+		return
+	default:
+	}
 	if parent.Err() != nil {
 		return
 	}

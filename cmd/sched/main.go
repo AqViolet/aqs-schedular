@@ -388,6 +388,7 @@ func runDaemon(logger *slog.Logger) error {
 			schedulerErr = errors.New("scheduler did not stop")
 		}
 	}
+	pool.Stop()
 	inFlight, err := st.RunningRuns(context.Background())
 	if err != nil {
 		logger.Error("list in-flight runs", "error", err)

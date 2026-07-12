@@ -39,7 +39,7 @@ func TestNextAfterUTC(t *testing.T) {
 		{"dom OR dow: dow hit before dom", "0 0 13 * 5", utc(2026, 4, 1, 0, 0, 0), utc(2026, 4, 3, 0, 0, 0)},
 		{"dom only", "0 0 13 * *", utc(2026, 4, 1, 0, 0, 0), utc(2026, 4, 13, 0, 0, 0)},
 		{"dow only", "0 0 * * 1", utc(2026, 4, 1, 0, 0, 0), utc(2026, 4, 6, 0, 0, 0)},
-		{"dow star step is still star (AND)", "0 0 13 * */2", utc(2026, 2, 1, 0, 0, 0), utc(2026, 6, 13, 0, 0, 0)},
+		{"stepped day-of-week field with restricted dom uses AND", "0 0 13 * */2", utc(2026, 2, 1, 0, 0, 0), utc(2026, 6, 13, 0, 0, 0)},
 		{"sunday as 0", "0 0 * * 0", utc(2026, 2, 1, 0, 0, 0), utc(2026, 2, 8, 0, 0, 0)},
 		{"sunday as 7", "0 0 * * 7", utc(2026, 2, 1, 0, 0, 0), utc(2026, 2, 8, 0, 0, 0)},
 		{"weekdays skip weekend", "0 9 * * 1-5", utc(2026, 4, 3, 10, 0, 0), utc(2026, 4, 6, 9, 0, 0)},

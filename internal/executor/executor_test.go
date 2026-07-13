@@ -176,6 +176,72 @@ func TestExecutorSchedulesRetry(t *testing.T) {
 	}
 }
 
+func TestRecoverInterruptedRunSchedulesRetry(t *testing.T) {
+	st := newTestStore(t)
+	job, run := createRun(t, st, "sleep 10", 5, 2)
+	run.ScheduledAt = time.Now().Add(-time.Minute)
+	if err := st.UpdateRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	claimed, err := st.ClaimRun(context.Background(), run.ID, started)
+	if err != nil || !claimed {
+		t.Fatalf("ClaimRun: claimed=%t err=%v", claimed, err)
+	}
+	p := testPool(st)
+	if err := p.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "failed" || got.Error != "interrupted by daemon restart" || got.FinishedAt == nil || got.DurationMS == nil {
+		t.Fatalf("recovered run = %#v", got)
+	}
+	runs, err := st.ListRuns(context.Background(), job.ID)
+	if err != nil || len(runs) != 2 {
+		t.Fatalf("runs=%d err=%v", len(runs), err)
+	}
+	foundRetry := false
+	for _, r := range runs {
+		if r.Attempt == 2 && r.Status == "pending" {
+			foundRetry = true
+		}
+	}
+	if !foundRetry {
+		t.Fatalf("retry run missing: %#v", runs)
+	}
+}
+
+func TestRecoverInterruptedRunAtRetryLimit(t *testing.T) {
+	st := newTestStore(t)
+	job, run := createRun(t, st, "sleep 10", 5, 1)
+	run.ScheduledAt = time.Now().Add(-time.Minute)
+	if err := st.UpdateRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := st.ClaimRun(context.Background(), run.ID, time.Now())
+	if err != nil || !claimed {
+		t.Fatalf("ClaimRun: claimed=%t err=%v", claimed, err)
+	}
+	p := testPool(st)
+	if err := p.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "dead" || got.Error != "interrupted by daemon restart" || got.FinishedAt == nil {
+		t.Fatalf("recovered run = %#v", got)
+	}
+	runs, err := st.ListRuns(context.Background(), job.ID)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("runs=%d err=%v", len(runs), err)
+	}
+}
+
 func TestBackoffDelay(t *testing.T) {
 	rngA := rand.New(rand.NewSource(42))
 	rngB := rand.New(rand.NewSource(42))

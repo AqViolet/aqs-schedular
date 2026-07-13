@@ -50,6 +50,38 @@ func New(st store.Store, concurrency int, logger *slog.Logger) *Pool {
 	}
 }
 
+func (p *Pool) Recover(ctx context.Context) error {
+	runs, err := p.store.RunningRuns(ctx)
+	if err != nil {
+		return err
+	}
+	for _, run := range runs {
+		job, err := p.store.GetJob(ctx, run.JobID)
+		if err != nil {
+			return fmt.Errorf("load interrupted run job %s: %w", run.JobID, err)
+		}
+		finished := time.Now()
+		run.Status = "failed"
+		if run.Attempt >= job.MaxRetries {
+			run.Status = "dead"
+		}
+		run.FinishedAt = &finished
+		run.Error = "interrupted by daemon restart"
+		if run.StartedAt != nil {
+			duration := finished.Sub(*run.StartedAt).Milliseconds()
+			run.DurationMS = &duration
+		}
+		if err := p.store.UpdateRun(ctx, run); err != nil {
+			return fmt.Errorf("recover run %s: %w", run.ID, err)
+		}
+		if run.Status == "failed" {
+			p.retry(job, run)
+		}
+		p.logger.Warn("recovered interrupted run", "run_id", run.ID, "job_id", run.JobID, "status", run.Status)
+	}
+	return nil
+}
+
 func (p *Pool) Start() {
 	execCtx, cancel := context.WithCancel(context.Background())
 	p.cancelExec = cancel

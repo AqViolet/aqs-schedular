@@ -364,6 +364,9 @@ func runDaemon(logger *slog.Logger) error {
 	defer st.Close()
 	logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	pool := executor.New(st, config.DefaultConcurrency, logger)
+	if err := pool.Recover(context.Background()); err != nil {
+		return err
+	}
 	pool.Start()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

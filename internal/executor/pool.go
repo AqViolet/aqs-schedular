@@ -163,6 +163,14 @@ func (p *Pool) Stop() {
 	}
 }
 
+func (p *Pool) Abort() {
+	p.Stop()
+	if p.cancelExec != nil {
+		p.cancelExec()
+	}
+	<-p.done
+}
+
 func (p *Pool) Shutdown(ctx context.Context) error {
 	p.Stop()
 	select {

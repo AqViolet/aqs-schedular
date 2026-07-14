@@ -17,7 +17,7 @@ In another terminal, add a job and inspect its output:
 ./sched logs <job-id>
 ```
 
-The database defaults to `aqs.db` in the current directory. Set `AQS_DB` to change its location. The daemon emits JSON logs; CLI commands print text output.
+The database defaults to `aqs.db` in the current directory. Set `AQS_DB` to change its location. The daemon emits JSON logs; CLI commands print text output. Redis is optional; without `AQS_REDIS_URL`, the daemon runs in local single-node mode.
 
 For a one-shot job, use an RFC3339 timestamp:
 
@@ -32,6 +32,8 @@ Commands are run through `sh -c`. Put `--` between scheduler options and the com
 ```mermaid
 flowchart LR
     CLI[CLI] --> Scheduler[Scheduler]
+    Redis[(Optional Redis lease)] --> Leader[Leader election]
+    Leader --> Scheduler
     Scheduler --> Executor[Executor pool]
     Scheduler --> Store[(SQLite store)]
     Executor --> Store
@@ -56,6 +58,12 @@ When day-of-month and day-of-week are both restricted, either match is sufficien
 The executor defaults to four workers. Commands run in their own process group, so a timeout kills the shell and its child processes. Stdout and stderr are persisted in chunks of up to 1 KiB.
 
 `--max-retries` is the attempt limit used by the stored run attempt number: attempts below that limit can create a retry; reaching the limit marks the run dead. Backoff may be `exponential`, `linear`, or `none`. Exponential backoff starts at one second and adds up to one second of jitter. After an ungraceful daemon exit, runs left in `running` are marked interrupted and follow the same retry limit.
+
+## Redis leadership
+
+Set `AQS_REDIS_URL` to a Redis connection URL to enable active/passive daemon election. For example, `AQS_REDIS_URL=redis://localhost:6379/0 ./sched daemon`. The default lease key is `aqs-schedular:leader`; override it with `AQS_LEADER_KEY`. The lease TTL defaults to 15 seconds and can be changed with `AQS_LEADER_TTL`; followers retry every two seconds by default, configurable with `AQS_LEADER_RETRY`.
+
+Only the lease holder runs the scheduler and executor. Redis leases are renewed with owner-token checks and released with compare-and-delete; if renewal fails, the daemon stops accepting work and aborts in-flight processes rather than continuing as a stale leader. This is coordination, not distributed execution: each daemon still uses its configured SQLite database and local worker pool. Do not point multiple hosts at a SQLite file on a network filesystem; shared durable storage and distributed workers are a later step.
 
 ## Design decisions
 
@@ -91,7 +99,6 @@ go vet ./...
 
 ## Roadmap
 
-- Redis coordination and leader election
-- Distributed workers
+- Shared durable storage and distributed workers
 - Next.js dashboard
 - Alerts and operational notifications

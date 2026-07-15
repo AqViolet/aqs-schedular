@@ -183,6 +183,12 @@ func (s *SQLite) UpdateJob(ctx context.Context, j Job) error {
 	return requireRow(res, err)
 }
 
+func (s *SQLite) UpdateJobConfiguration(ctx context.Context, j Job, scheduleChanged bool) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE jobs SET name=?, schedule=?, command=?, timeout_seconds=?, max_retries=?, backoff=?, next_run_at=CASE WHEN ? THEN ? ELSE next_run_at END, updated_at=? WHERE id=?`,
+		j.Name, j.Schedule, j.Command, j.TimeoutSeconds, j.MaxRetries, j.Backoff, scheduleChanged, unixPtr(j.NextRunAt), time.Now().Unix(), j.ID)
+	return requireRow(res, err)
+}
+
 func (s *SQLite) SetJobStatus(ctx context.Context, id, status string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE jobs SET status=?, updated_at=? WHERE id=?`, status, time.Now().Unix(), id)
 	return requireRow(res, err)
@@ -416,3 +422,4 @@ func requireRow(res sql.Result, err error) error {
 }
 
 var _ Store = (*SQLite)(nil)
+var _ JobConfigurationStore = (*SQLite)(nil)

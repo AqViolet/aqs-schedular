@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -39,6 +40,21 @@ type Log struct {
 	Chunk     string
 	Seq       int64
 	CreatedAt time.Time
+}
+
+var ErrLeaseLost = errors.New("run lease lost")
+
+type JobConfigurationStore interface {
+	UpdateJobConfiguration(context.Context, Job, bool) error
+}
+
+type DistributedStore interface {
+	Store
+	ClaimRunLease(context.Context, string, string, time.Time, time.Duration) (bool, error)
+	RenewRunLease(context.Context, string, string, time.Time, time.Duration) (bool, error)
+	CompleteRun(context.Context, Run, string, *Run) error
+	AppendRunLog(context.Context, string, Log) error
+	RecoverExpiredRuns(context.Context, time.Time) error
 }
 
 type Store interface {

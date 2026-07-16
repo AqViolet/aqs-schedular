@@ -80,6 +80,13 @@ func FromEnv(logger *slog.Logger) (Leader, error) {
 	key := os.Getenv("AQS_LEADER_KEY")
 	if key == "" {
 		key = "aqs-schedular:leader"
+		if strings.EqualFold(os.Getenv("AQS_STORE"), "redis") {
+			prefix := os.Getenv("AQS_REDIS_PREFIX")
+			if prefix == "" {
+				prefix = "aqs-scheduler"
+			}
+			key = prefix + ":leader"
+		}
 	}
 	ttl := 15 * time.Second
 	if raw := os.Getenv("AQS_LEADER_TTL"); raw != "" {

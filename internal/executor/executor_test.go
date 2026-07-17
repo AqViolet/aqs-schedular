@@ -23,7 +23,7 @@ func newTestStore(t *testing.T) *store.SQLite {
 	return st
 }
 
-func createRun(t *testing.T, st *store.SQLite, command string, timeout, retries int) (store.Job, store.Run) {
+func createRun(t *testing.T, st store.Store, command string, timeout, retries int) (store.Job, store.Run) {
 	t.Helper()
 	now := time.Now().Truncate(time.Second)
 	job := store.Job{

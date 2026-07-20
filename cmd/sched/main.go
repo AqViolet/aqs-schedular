@@ -17,10 +17,7 @@ import (
 	"time"
 
 	"github.com/AqViolet/aqs-schedular/internal/config"
-	"github.com/AqViolet/aqs-schedular/internal/coordination"
 	"github.com/AqViolet/aqs-schedular/internal/cron"
-	"github.com/AqViolet/aqs-schedular/internal/executor"
-	"github.com/AqViolet/aqs-schedular/internal/scheduler"
 	"github.com/AqViolet/aqs-schedular/internal/store"
 )
 
@@ -32,14 +29,19 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) error {
-	logger := slog.New(slog.NewTextHandler(stderr, nil))
+	slog.SetDefault(slog.New(slog.NewTextHandler(stderr, nil)))
 	if len(args) == 0 {
 		return usageError()
 	}
-	if args[0] == "daemon" {
-		return runDaemon(logger)
+	settings, err := config.Load()
+	if err != nil {
+		return err
 	}
-	st, err := store.Open(config.DatabasePath())
+	switch args[0] {
+	case "daemon", "scheduler", "worker", "serve":
+		return runService(args[0], args[1:], settings, stderr)
+	}
+	st, err := settings.OpenStore()
 	if err != nil {
 		return err
 	}
@@ -69,7 +71,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 }
 
 func usageError() error {
-	return errors.New("usage: sched <daemon|add|list|logs|run|retry|pause|resume|delete>")
+	return errors.New("usage: sched <daemon|scheduler|worker|serve|add|list|logs|run|retry|pause|resume|delete>")
 }
 
 func addJob(ctx context.Context, st store.Store, args []string, stdout, stderr io.Writer) error {
@@ -355,91 +357,6 @@ func deleteJob(ctx context.Context, st store.Store, args []string, stdout io.Wri
 	}
 	fmt.Fprintf(stdout, "deleted %s\n", args[0])
 	return nil
-}
-
-func runDaemon(logger *slog.Logger) error {
-	logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
-	st, err := store.Open(config.DatabasePath())
-	if err != nil {
-		return err
-	}
-	defer st.Close()
-	leader, err := coordination.FromEnv(logger)
-	if err != nil {
-		return err
-	}
-	defer leader.Close()
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	logger.Info("daemon started", "database", config.DatabasePath(), "workers", config.DefaultConcurrency)
-	err = leader.Run(ctx, func(leaderCtx context.Context) error {
-		logger.Info("daemon leadership active")
-		return runNode(leaderCtx, st, logger)
-	})
-	logger.Info("daemon stopped")
-	return err
-}
-
-func runNode(ctx context.Context, st store.Store, logger *slog.Logger) error {
-	pool := executor.New(st, config.DefaultConcurrency, logger)
-	if err := pool.Recover(context.Background()); err != nil {
-		return err
-	}
-	pool.Start()
-	nodeCtx, cancel := context.WithCancel(ctx)
-	loop := scheduler.New(st, logger)
-	schedulerDone := make(chan error, 1)
-	go func() { schedulerDone <- loop.Run(nodeCtx) }()
-	var schedulerErr error
-	select {
-	case <-ctx.Done():
-		logger.Info("shutdown signal received", "cause", context.Cause(ctx))
-	case schedulerErr = <-schedulerDone:
-		if schedulerErr != nil {
-			logger.Error("scheduler stopped", "error", schedulerErr)
-		}
-	}
-	cancel()
-	if schedulerErr == nil {
-		select {
-		case schedulerErr = <-schedulerDone:
-		case <-time.After(2 * time.Second):
-			schedulerErr = errors.New("scheduler did not stop")
-		}
-	}
-	pool.Stop()
-	inFlight, err := st.RunningRuns(context.Background())
-	if err != nil {
-		logger.Error("list in-flight runs", "error", err)
-	}
-	for _, r := range inFlight {
-		logger.Info("waiting for in-flight run", "run_id", r.ID, "job_id", r.JobID)
-	}
-	if errors.Is(context.Cause(ctx), coordination.ErrLeadershipLost) {
-		pool.Abort()
-		for _, r := range inFlight {
-			current, getErr := st.GetRun(context.Background(), r.ID)
-			logger.Warn("in-flight run abandoned after leadership loss", "run_id", r.ID, "status", current.Status, "error", getErr)
-		}
-		return schedulerErr
-	}
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	shutdownErr := pool.Shutdown(shutdownCtx)
-	shutdownCancel()
-	for _, r := range inFlight {
-		current, getErr := st.GetRun(context.Background(), r.ID)
-		if shutdownErr != nil {
-			logger.Warn("in-flight run abandoned", "run_id", r.ID, "error", shutdownErr)
-		} else if getErr == nil && current.Status != "running" {
-			logger.Info("in-flight run completed", "run_id", r.ID, "status", current.Status)
-		} else {
-			logger.Warn("in-flight run remains unfinished", "run_id", r.ID, "error", getErr)
-		}
-	}
-	if schedulerErr != nil {
-		return schedulerErr
-	}
-	return shutdownErr
 }
 
 func newID() string {

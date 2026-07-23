@@ -1,6 +1,6 @@
 # aqs-schedular
 
-A self-hosted job scheduler for cron jobs, retries, and run history, built on Go and SQLite.
+A self-hosted Go job scheduler with cron, retries, SQLite or shared Redis storage, distributed workers, and a Next.js operations dashboard.
 
 ## Quickstart
 
@@ -31,15 +31,17 @@ Commands are run through `sh -c`. Put `--` between scheduler options and the com
 
 ```mermaid
 flowchart LR
-    CLI[CLI] --> Scheduler[Scheduler]
-    Redis[(Optional Redis lease)] --> Leader[Leader election]
-    Leader --> Scheduler
-    Scheduler --> Executor[Executor pool]
-    Scheduler --> Store[(SQLite store)]
-    Executor --> Store
+    Dashboard[Next.js dashboard] --> API[Authenticated API]
+    CLI[CLI] --> Store[(SQLite or Redis store)]
+    API --> Store
+    Leader[Redis scheduler election] --> Scheduler[Scheduler]
+    Scheduler --> Store
+    Store --> Workers[Local or distributed workers]
+    Workers --> Store
+    Workers --> Alerts[Optional webhook alerts]
 ```
 
-The scheduler checks for due jobs once per second, stores pending runs, and advances each job's `next_run_at` in the same SQLite transaction. The executor claims pending runs, starts shell commands, saves output in bounded chunks, and records the result. SQLite is the source of truth for both work and history.
+The scheduler checks for due jobs once per second, stores pending runs, and advances `next_run_at` atomically. The executor claims pending work, captures output, and persists results. SQLite is the default local store; `AQS_STORE=redis` uses shared Redis data and leased, fenced worker claims.
 
 ## Data model
 
@@ -59,11 +61,47 @@ The executor defaults to four workers. Commands run in their own process group, 
 
 `--max-retries` is the attempt limit used by the stored run attempt number: attempts below that limit can create a retry; reaching the limit marks the run dead. Backoff may be `exponential`, `linear`, or `none`. Exponential backoff starts at one second and adds up to one second of jitter. After an ungraceful daemon exit, runs left in `running` are marked interrupted and follow the same retry limit.
 
-## Redis leadership
+## Distributed mode
 
-Set `AQS_REDIS_URL` to a Redis connection URL to enable active/passive daemon election. For example, `AQS_REDIS_URL=redis://localhost:6379/0 ./sched daemon`. The default lease key is `aqs-schedular:leader`; override it with `AQS_LEADER_KEY`. The lease TTL defaults to 15 seconds and can be changed with `AQS_LEADER_TTL`; followers retry every two seconds by default, configurable with `AQS_LEADER_RETRY`.
+All participating CLI, API, scheduler, and worker processes must use the same Redis URL and namespace:
 
-Only the lease holder runs the scheduler and executor. Redis leases are renewed with owner-token checks and released with compare-and-delete; if renewal fails, the daemon stops accepting work and aborts in-flight processes rather than continuing as a stale leader. This is coordination, not distributed execution: each daemon still uses its configured SQLite database and local worker pool. Do not point multiple hosts at a SQLite file on a network filesystem; shared durable storage and distributed workers are a later step.
+```sh
+export AQS_STORE=redis
+export AQS_REDIS_URL=redis://localhost:6379/0
+export AQS_REDIS_PREFIX=aqs-scheduler
+./sched scheduler
+```
+
+On worker hosts, use the same settings and run `./sched worker --concurrency 4`. Alternatively, `./sched daemon` runs a worker pool on every instance while electing one scheduler. Workers continue operating when scheduler leadership changes.
+
+Worker claims have unique owner tokens, renewed leases, fenced log/result writes, and atomic result-plus-retry persistence. Expired worker leases requeue the run and preserve its existing logs. Execution remains **at-least-once**: external command side effects can repeat after a crash, so jobs must be idempotent. Worker hosts need the commands, credentials, and files required by their jobs. No sandbox or per-job host routing is provided.
+
+`AQS_CONCURRENCY` defaults to 4. `AQS_WORKER_LEASE_TTL` and `AQS_LEADER_TTL` default to 15 seconds (minimum 3 seconds); `AQS_LEADER_RETRY` defaults to 2 seconds. `AQS_LEADER_KEY` defaults to `<AQS_REDIS_PREFIX>:leader` in distributed mode. Keep host clocks and timezones synchronized.
+
+Redis is now the data store in this mode, not merely a lock service. Enable AOF persistence, configure backups and a non-evicting policy, and restrict access with authentication/TLS. Durability depends on your Redis configuration; `appendfsync everysec` can lose recent writes. This implementation targets one Redis primary, not Redis Cluster, and scans stored collections rather than optimizing large queues. Existing SQLite data is not migrated automatically.
+
+Legacy SQLite-plus-Redis election remains an active/passive local mode; do not use shared SQLite files across hosts or network filesystems.
+
+## Management API and dashboard
+
+Set a strong private `AQS_API_TOKEN`, then run `./sched serve --listen 127.0.0.1:8080`. This serves the API only; run a daemon or workers separately with the same store configuration. To serve the API alongside a daemon, set `AQS_API_LISTEN=127.0.0.1:8080`.
+
+The API supports job CRUD, pause/resume/manual runs, run history, logs, retry, and status counts. `/api/*` requires `Authorization: Bearer <token>`; `/healthz` returns a minimal unauthenticated response. Treat this API as administrative shell-execution access. Keep it on loopback or a private network and use TLS when exposed remotely.
+
+Configure `dashboard/.env.local` with `AQS_API_URL=http://127.0.0.1:8080`, the same `AQS_API_TOKEN`, and `DASHBOARD_PASSWORD`. The token stays in the Next.js server and is not sent to the browser. The optional dashboard Basic-auth username is `admin`; set a password before any remote access.
+
+```sh
+npm --prefix dashboard ci
+npm --prefix dashboard run dev
+```
+
+The dashboard binds to `127.0.0.1:3000`. It includes job creation, filtering, pause/resume/delete, manual triggers, run history, retry, and polling/follow logs. For production, run `npm --prefix dashboard run build` then `npm --prefix dashboard start`.
+
+## Webhook alerts
+
+Set `AQS_ALERT_WEBHOOK_URL` on worker/daemon processes to receive dead-run alerts. `AQS_ALERT_STATUSES` can select `dead`, `failed`, and/or `succeeded`; the default is `dead`. `AQS_ALERT_SECRET` enables an HMAC-SHA256 `X-AQS-Signature` over the JSON body. `X-AQS-Event-ID` is stable for a run/status so receivers can deduplicate deliveries.
+
+Payloads include job/run IDs, job name, status, attempt, error, duration, and exit code—not commands or logs. Delivery is best effort, bounded to five seconds and three attempts for transient failures. Redirects are refused. There is no durable alert outbox yet; failed delivery is logged and does not alter the run result.
 
 ## Design decisions
 
@@ -76,7 +114,10 @@ Only the lease holder runs the scheduler and executor. Redis leases are renewed 
 ## CLI reference
 
 ```text
-sched daemon
+sched daemon [--concurrency 4] [--listen 127.0.0.1:8080]
+sched scheduler
+sched worker [--concurrency 4]
+sched serve [--listen 127.0.0.1:8080]
 sched add --schedule "*/5 * * * *" --name "ping" --timeout 10 -- curl https://example.com
 sched add --at "2026-10-01T15:00:00Z" --name "one-shot" -- echo done
 sched list [--status active|paused|dead]
@@ -97,8 +138,10 @@ go test -race ./...
 go vet ./...
 ```
 
-## Roadmap
+Frontend checks: `npm --prefix dashboard run typecheck`, `npm --prefix dashboard run lint`, `npm --prefix dashboard test`, and `npm --prefix dashboard run test:integration`.
 
-- Shared durable storage and distributed workers
-- Next.js dashboard
-- Alerts and operational notifications
+## Next-session checkpoint
+
+Shared Redis storage, leased distributed workers, authenticated REST management, the Next.js dashboard, and best-effort signed webhook alerts are implemented. Backend race/vet checks and frontend build/tests have passed.
+
+Before a production deployment, finish live multi-process Redis and real-dashboard end-to-end testing, review legacy SQLite leadership renewal during graceful shutdown, and add an operational persistence/backup setup. Future hardening includes a durable alert outbox, pagination/retention, and a SQLite-to-Redis migration tool.

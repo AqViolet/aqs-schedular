@@ -1,5 +1,5 @@
 *.md
-!README.md
+!/README.md
 
 /sched
 /bin/
@@ -21,3 +21,10 @@ coverage.*
 .idea/
 .vscode/
 *.swp
+
+node_modules/
+.next/
+.npm-cache/
+*.tsbuildinfo
+.env
+.env.*

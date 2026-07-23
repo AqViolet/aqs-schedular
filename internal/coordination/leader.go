@@ -33,6 +33,11 @@ type RedisLeader struct {
 	ttl    time.Duration
 	retry  time.Duration
 	logger *slog.Logger
+
+	// renewEvery overrides the renewal cadence in tests. Production uses ttl/3.
+	renewEvery time.Duration
+	// onRenew is an optional test hook invoked after a successful renewal.
+	onRenew func()
 }
 
 var renewScript = redis.NewScript(`if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("pexpire", KEYS[1], ARGV[2]) else return 0 end`)
@@ -153,19 +158,41 @@ func (r *RedisLeader) Run(ctx context.Context, run func(context.Context) error) 
 }
 
 func (r *RedisLeader) runAsLeader(parent context.Context, run func(context.Context) error) (bool, error) {
+	// The run context is canceled when leadership is lost or the parent shuts
+	// down. Renewal deliberately uses a background context: the callback may
+	// spend up to its graceful-shutdown budget draining in-flight work, and
+	// the lease must stay owned for that whole period so another instance
+	// cannot start scheduling the same work.
 	ctx, cancel := context.WithCancelCause(parent)
 	lost := make(chan struct{})
+	stopRenew := make(chan struct{})
 	renewDone := make(chan struct{})
 	go func() {
 		defer close(renewDone)
-		ticker := time.NewTicker(r.ttl / 3)
+		every := r.renewEvery
+		if every <= 0 {
+			every = r.ttl / 3
+		}
+		if every <= 0 {
+			every = time.Second
+		}
+		ticker := time.NewTicker(every)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-stopRenew:
 				return
 			case <-ticker.C:
-				ok, err := r.renew(ctx)
+				timeout := every
+				if timeout > 2*time.Second {
+					timeout = 2 * time.Second
+				}
+				if timeout < 100*time.Millisecond {
+					timeout = 100 * time.Millisecond
+				}
+				renewCtx, renewCancel := context.WithTimeout(context.Background(), timeout)
+				ok, err := r.renew(renewCtx)
+				renewCancel()
 				if err != nil || !ok {
 					if err != nil {
 						r.logger.Error("renew leader lease", "error", err)
@@ -174,21 +201,27 @@ func (r *RedisLeader) runAsLeader(parent context.Context, run func(context.Conte
 					close(lost)
 					return
 				}
+				if r.onRenew != nil {
+					r.onRenew()
+				}
 			}
 		}
 	}()
 
 	runErr := run(ctx)
-	cancel(context.Canceled)
+	close(stopRenew)
 	<-renewDone
 	releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	_, releaseErr := r.release(releaseCtx)
 	releaseCancel()
-	if runErr != nil {
-		return false, runErr
-	}
 	if releaseErr != nil {
 		r.logger.Warn("release leader lease", "error", releaseErr)
+	}
+	if context.Cause(ctx) == ErrLeadershipLost {
+		return true, nil
+	}
+	if runErr != nil && parent.Err() == nil {
+		return false, runErr
 	}
 	select {
 	case <-lost:

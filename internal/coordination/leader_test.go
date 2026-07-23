@@ -196,3 +196,99 @@ func TestLocalLeaderRunsWithoutRedis(t *testing.T) {
 		t.Fatalf("local leader called=%t err=%v", called.Load(), err)
 	}
 }
+
+func TestRenewalContinuesWhileGracefulShutdownDrains(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { client.Close() })
+	var renewals atomic.Int32
+	leader := &RedisLeader{
+		client: client, key: "drain:leader", token: "owner",
+		ttl: 300 * time.Millisecond, retry: time.Millisecond,
+		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		renewEvery: 10 * time.Millisecond,
+		onRenew:    func() { renewals.Add(1) },
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	drained := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- leader.Run(ctx, func(leaderCtx context.Context) error {
+			close(started)
+			<-leaderCtx.Done()
+			// Simulate a local node draining in-flight work after shutdown.
+			time.Sleep(150 * time.Millisecond)
+			close(drained)
+			return nil
+		})
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("leader callback did not start")
+	}
+	before := renewals.Load()
+	cancel()
+	deadline := time.Now().Add(time.Second)
+	for renewals.Load() <= before && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if renewals.Load() <= before {
+		t.Fatal("lease renewal stopped during graceful drain")
+	}
+	select {
+	case <-drained:
+	case <-time.After(time.Second):
+		t.Fatal("drain did not finish")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("election loop did not stop")
+	}
+	if value, err := client.Get(context.Background(), leader.key).Result(); err != redis.Nil || value != "" {
+		t.Fatalf("lease was not released: value=%q err=%v", value, err)
+	}
+}
+
+func TestLeadershipLossDoesNotPropagateCallbackCancellation(t *testing.T) {
+	server := miniredis.RunT(t)
+	leader := newTestLeader(t, server, 10*time.Millisecond)
+	leader.ttl = 300 * time.Millisecond
+	leader.renewEvery = 10 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- leader.Run(ctx, func(leaderCtx context.Context) error {
+			close(started)
+			<-leaderCtx.Done()
+			// Returning the cancellation error must not be mistaken for a
+			// service failure when the cause was leadership loss.
+			return leaderCtx.Err()
+		})
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("leader callback did not start")
+	}
+	if err := server.Set(leader.key, "new-owner"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("leadership loss returned an error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("election loop did not stop")
+	}
+}

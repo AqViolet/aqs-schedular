@@ -104,3 +104,70 @@ func TestAddOneShotAndValidation(t *testing.T) {
 		t.Fatal("add without a schedule should fail")
 	}
 }
+
+func TestPruneRunsPreservesLiveAndAlertingHistory(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "scheduler.db")
+	t.Setenv("AQS_DB", db)
+	st, err := store.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	job := store.Job{ID: "job", Name: "nightly", Schedule: "@daily", Command: "echo ok", Status: "active", CreatedAt: now, UpdatedAt: now}
+	if err := st.CreateJob(context.Background(), job); err != nil {
+		st.Close()
+		t.Fatal(err)
+	}
+	add := func(id, status string, at time.Time) {
+		t.Helper()
+		if err := st.CreateRun(context.Background(), store.Run{ID: id, JobID: job.ID, Status: status, Attempt: 1, ScheduledAt: at, CreatedAt: at}); err != nil {
+			st.Close()
+			t.Fatal(err)
+		}
+	}
+	add("old-succeeded", "succeeded", now.Add(-2*time.Hour))
+	add("old-failed-alerting", "failed", now.Add(-2*time.Hour))
+	add("old-pending", "pending", now.Add(-2*time.Hour))
+	add("recent-succeeded", "succeeded", now.Add(-time.Minute))
+	alerts, ok := any(st).(store.AlertStore)
+	if !ok {
+		st.Close()
+		t.Fatal("store does not support alerts")
+	}
+	if err := alerts.EnqueueAlert(context.Background(), store.Alert{ID: "old-failed-alerting:failed", RunID: "old-failed-alerting", JobID: job.ID, JobName: job.Name, Status: "failed", Attempt: 1}); err != nil {
+		st.Close()
+		t.Fatal(err)
+	}
+	st.Close()
+
+	var out, stderr bytes.Buffer
+	if err := run([]string{"prune", "--older-than", "1h", "--dry-run"}, &out, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "would prune 1 runs") {
+		t.Fatalf("dry run output: %s", out.String())
+	}
+	out.Reset()
+	if err := run([]string{"prune", "--older-than", "1h"}, &out, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "pruned 1 runs") {
+		t.Fatalf("prune output: %s", out.String())
+	}
+	st, err = store.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	runs, err := st.ListRuns(context.Background(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[string]bool)
+	for _, run := range runs {
+		got[run.ID] = true
+	}
+	if got["old-succeeded"] || !got["old-failed-alerting"] || !got["old-pending"] || !got["recent-succeeded"] {
+		t.Fatalf("unexpected runs after prune: %+v", got)
+	}
+}

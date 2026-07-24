@@ -131,6 +131,9 @@ func runService(role string, args []string, settings config.Settings, stderr io.
 	if outbox != nil && (role == "daemon" || role == "worker") {
 		startTask(func() error { return outbox.Run(ctx) })
 	}
+	if role == "daemon" && settings.Retention > 0 {
+		startTask(func() error { return retentionLoop(ctx, st, settings.Retention, logger) })
+	}
 	if role == "daemon" || role == "scheduler" {
 		startTask(func() error {
 			return leader.Run(ctx, func(leaderCtx context.Context) error {
@@ -186,6 +189,28 @@ func runService(role string, args []string, settings config.Settings, stderr io.
 	}
 	logger.Info("service stopped")
 	return serviceErr
+}
+
+func retentionLoop(ctx context.Context, st store.Store, olderThan time.Duration, logger *slog.Logger) error {
+	retention, ok := st.(store.RetentionStore)
+	if !ok {
+		return nil
+	}
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		count, err := retention.PruneRuns(ctx, time.Now().UTC().Add(-olderThan), nil, false)
+		if err != nil {
+			logger.Warn("retention prune failed")
+		} else if count > 0 {
+			logger.Info("pruned old runs", "count", count, "older_than", olderThan)
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+	}
 }
 
 func newWorkerPool(st store.Store, settings config.Settings, logger *slog.Logger, resultHandler func(store.Job, store.Run)) (*executor.Pool, error) {

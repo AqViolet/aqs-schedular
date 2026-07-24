@@ -27,6 +27,7 @@ type Settings struct {
 	AlertRetry    time.Duration
 	AlertLease    time.Duration
 	AlertLookback time.Duration
+	Retention     time.Duration
 }
 
 func Load() (Settings, error) {
@@ -100,6 +101,13 @@ func Load() (Settings, error) {
 			return s, fmt.Errorf("AQS_ALERT_SWEEP_LOOKBACK must be between 1m and 2160h")
 		}
 		s.AlertLookback = value
+	}
+	if raw := os.Getenv("AQS_RETENTION"); raw != "" {
+		value, err := time.ParseDuration(raw)
+		if err != nil || value < time.Hour || value > 10*365*24*time.Hour {
+			return s, fmt.Errorf("AQS_RETENTION must be between 1h and 87600h")
+		}
+		s.Retention = value
 	}
 	return s, nil
 }

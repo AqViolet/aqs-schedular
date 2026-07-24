@@ -65,13 +65,15 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return setStatus(ctx, st, args[1:], "active", stdout)
 	case "delete":
 		return deleteJob(ctx, st, args[1:], stdout)
+	case "prune":
+		return pruneRuns(ctx, st, args[1:], stdout, stderr)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
 }
 
 func usageError() error {
-	return errors.New("usage: sched <daemon|scheduler|worker|serve|add|list|logs|run|retry|pause|resume|delete>")
+	return errors.New("usage: sched <daemon|scheduler|worker|serve|add|list|logs|run|retry|pause|resume|delete|prune>")
 }
 
 func addJob(ctx context.Context, st store.Store, args []string, stdout, stderr io.Writer) error {
@@ -356,6 +358,46 @@ func deleteJob(ctx context.Context, st store.Store, args []string, stdout io.Wri
 		return err
 	}
 	fmt.Fprintf(stdout, "deleted %s\n", args[0])
+	return nil
+}
+
+func pruneRuns(ctx context.Context, st store.Store, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("prune", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	olderThan := fs.Duration("older-than", 30*24*time.Hour, "minimum age of terminal runs to delete")
+	statusCSV := fs.String("status", "succeeded,failed,dead,missed", "comma-separated terminal run statuses")
+	dryRun := fs.Bool("dry-run", false, "count matching runs without deleting")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("prune does not accept positional arguments")
+	}
+	if *olderThan <= 0 {
+		return errors.New("--older-than must be positive")
+	}
+	var statuses []string
+	for _, status := range strings.Split(*statusCSV, ",") {
+		statuses = append(statuses, strings.TrimSpace(status))
+	}
+	statuses, err := store.ValidatePruneStatuses(statuses)
+	if err != nil {
+		return err
+	}
+	retention, ok := st.(store.RetentionStore)
+	if !ok {
+		return errors.New("store does not support retention")
+	}
+	cutoff := time.Now().UTC().Add(-*olderThan)
+	count, err := retention.PruneRuns(ctx, cutoff, statuses, *dryRun)
+	if err != nil {
+		return err
+	}
+	if *dryRun {
+		fmt.Fprintf(stdout, "would prune %d runs scheduled before %s\n", count, cutoff.Format(time.RFC3339))
+	} else {
+		fmt.Fprintf(stdout, "pruned %d runs scheduled before %s\n", count, cutoff.Format(time.RFC3339))
+	}
 	return nil
 }
 

@@ -57,8 +57,8 @@ func (s *SQLite) migrate(ctx context.Context) error {
 	if err := s.db.QueryRowContext(ctx, `SELECT version FROM schema_version LIMIT 1`).Scan(&version); err != nil {
 		return err
 	}
-	if version > 1 {
-		return fmt.Errorf("database schema version %d is newer than supported version 1", version)
+	if version > 2 {
+		return fmt.Errorf("database schema version %d is newer than supported version 2", version)
 	}
 	if version < 1 {
 		tx, err := s.db.BeginTx(ctx, nil)
@@ -111,6 +111,45 @@ func (s *SQLite) migrate(ctx context.Context) error {
 		}
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit schema migration: %w", err)
+		}
+	}
+	if version < 2 {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		for _, q := range []string{
+			`CREATE TABLE alert_outbox (
+				id TEXT PRIMARY KEY,
+				run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+				job_id TEXT NOT NULL,
+				job_name TEXT NOT NULL,
+				status TEXT NOT NULL,
+				attempt INTEGER NOT NULL,
+				exit_code INTEGER,
+				duration_ms INTEGER,
+				error TEXT,
+				finished_at INTEGER,
+				attempts INTEGER NOT NULL DEFAULT 0,
+				next_attempt_at INTEGER NOT NULL,
+				lease_owner TEXT,
+				lease_until INTEGER,
+				delivered_at INTEGER,
+				abandoned_at INTEGER,
+				last_error TEXT,
+				created_at INTEGER NOT NULL
+			)`,
+			`CREATE INDEX idx_alerts_due ON alert_outbox(delivered_at, abandoned_at, next_attempt_at)`,
+			`CREATE INDEX idx_alerts_run ON alert_outbox(run_id)`,
+			`UPDATE schema_version SET version = 2`,
+		} {
+			if _, err := tx.ExecContext(ctx, q); err != nil {
+				return fmt.Errorf("apply alert migration: %w", err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit alert migration: %w", err)
 		}
 	}
 	return nil

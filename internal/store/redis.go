@@ -27,7 +27,7 @@ func OpenRedis(url, prefix string) (*Redis, error) {
 		prefix = "aqs-scheduler"
 	}
 	s := &Redis{client: redis.NewClient(options)}
-	for _, suffix := range []string{"jobs", "runs", "logs", "leases"} {
+	for _, suffix := range []string{"jobs", "runs", "logs", "leases", "alerts"} {
 		s.keys = append(s.keys, prefix+":"+suffix)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -42,7 +42,7 @@ func OpenRedis(url, prefix string) (*Redis, error) {
 func (s *Redis) Close() error { return s.client.Close() }
 
 var redisMutation = redis.NewScript(`
-local jobs, runs, logs, leases = KEYS[1], KEYS[2], KEYS[3], KEYS[4]
+local jobs, runs, logs, leases, alerts = KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5]
 local op, id = ARGV[1], ARGV[2]
 local function get(key, field)
     local value = redis.call('HGET', key, field)
@@ -87,12 +87,22 @@ elseif op == 'status' then
 elseif op == 'delete' then
     if redis.call('HEXISTS', jobs, id) == 0 then return 'missing' end
     local all = redis.call('HGETALL', runs)
+    local removed = {}
     for i = 1, #all, 2 do
         if cjson.decode(all[i+1]).JobID == id then
+            removed[all[i]] = true
             redis.call('HDEL', runs, all[i])
             redis.call('HDEL', logs, all[i])
             redis.call('HDEL', leases, all[i])
             redis.call('DEL', leasekey(all[i]))
+        end
+    end
+    local alertAll = redis.call('HGETALL', alerts)
+    for i = 1, #alertAll, 2 do
+        local alert = cjson.decode(alertAll[i+1])
+        if removed[alert.RunID] then
+            redis.call('HDEL', alerts, alertAll[i])
+            redis.call('DEL', alerts .. ':lease:' .. alertAll[i])
         end
     end
     redis.call('HDEL', jobs, id)

@@ -23,6 +23,10 @@ type Settings struct {
 	AlertURL      string
 	AlertSecret   string
 	AlertStatuses []string
+	AlertMax      int
+	AlertRetry    time.Duration
+	AlertLease    time.Duration
+	AlertLookback time.Duration
 }
 
 func Load() (Settings, error) {
@@ -32,6 +36,7 @@ func Load() (Settings, error) {
 		Concurrency: DefaultConcurrency, WorkerLease: 15 * time.Second,
 		APIListen: os.Getenv("AQS_API_LISTEN"), APIToken: os.Getenv("AQS_API_TOKEN"),
 		AlertURL: os.Getenv("AQS_ALERT_WEBHOOK_URL"), AlertSecret: os.Getenv("AQS_ALERT_SECRET"),
+		AlertMax: 8, AlertRetry: 2 * time.Second, AlertLease: 30 * time.Second, AlertLookback: 24 * time.Hour,
 	}
 	if s.Backend == "" {
 		s.Backend = "sqlite"
@@ -67,6 +72,34 @@ func Load() (Settings, error) {
 			}
 			s.AlertStatuses = append(s.AlertStatuses, status)
 		}
+	}
+	if raw := os.Getenv("AQS_ALERT_MAX_ATTEMPTS"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > 100 {
+			return s, fmt.Errorf("AQS_ALERT_MAX_ATTEMPTS must be between 1 and 100")
+		}
+		s.AlertMax = value
+	}
+	if raw := os.Getenv("AQS_ALERT_RETRY"); raw != "" {
+		value, err := time.ParseDuration(raw)
+		if err != nil || value < 100*time.Millisecond || value > time.Hour {
+			return s, fmt.Errorf("AQS_ALERT_RETRY must be between 100ms and 1h")
+		}
+		s.AlertRetry = value
+	}
+	if raw := os.Getenv("AQS_ALERT_LEASE"); raw != "" {
+		value, err := time.ParseDuration(raw)
+		if err != nil || value < time.Second || value > time.Hour {
+			return s, fmt.Errorf("AQS_ALERT_LEASE must be between 1s and 1h")
+		}
+		s.AlertLease = value
+	}
+	if raw := os.Getenv("AQS_ALERT_SWEEP_LOOKBACK"); raw != "" {
+		value, err := time.ParseDuration(raw)
+		if err != nil || value < time.Minute || value > 90*24*time.Hour {
+			return s, fmt.Errorf("AQS_ALERT_SWEEP_LOOKBACK must be between 1m and 2160h")
+		}
+		s.AlertLookback = value
 	}
 	return s, nil
 }

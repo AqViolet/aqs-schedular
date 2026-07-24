@@ -63,6 +63,25 @@ func runService(role string, args []string, settings config.Settings, stderr io.
 			return err
 		}
 	}
+	var outbox *alerts.Outbox
+	if webhook != nil {
+		if alertStore, ok := st.(store.AlertStore); ok {
+			cfg := alerts.DefaultOutboxConfig()
+			cfg.MaxAttempts, cfg.RetryBase = settings.AlertMax, settings.AlertRetry
+			cfg.Lease, cfg.SweepLookback = settings.AlertLease, settings.AlertLookback
+			outbox, err = alerts.NewOutbox(alertStore, webhook, cfg, logger)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	var resultHandler func(store.Job, store.Run)
+	switch {
+	case outbox != nil:
+		resultHandler = outbox.Handler()
+	case webhook != nil:
+		resultHandler = webhook.Handler()
+	}
 	var leader coordination.Leader
 	if role == "daemon" || role == "scheduler" {
 		leader, err = coordination.FromEnv(logger)
@@ -103,18 +122,21 @@ func runService(role string, args []string, settings config.Settings, stderr io.
 	}
 	var pool *executor.Pool
 	if settings.Backend == "redis" && (role == "daemon" || role == "worker") {
-		pool, err = newWorkerPool(st, settings, logger, webhook)
+		pool, err = newWorkerPool(st, settings, logger, resultHandler)
 		if err != nil {
 			return err
 		}
 		pool.Start()
+	}
+	if outbox != nil && (role == "daemon" || role == "worker") {
+		startTask(func() error { return outbox.Run(ctx) })
 	}
 	if role == "daemon" || role == "scheduler" {
 		startTask(func() error {
 			return leader.Run(ctx, func(leaderCtx context.Context) error {
 				logger.Info("scheduler leadership active")
 				if settings.Backend == "sqlite" {
-					return runLocalNode(leaderCtx, st, settings, logger, webhook)
+					return runLocalNode(leaderCtx, st, settings, logger, resultHandler)
 				}
 				return scheduler.New(st, logger).Run(leaderCtx)
 			})
@@ -166,13 +188,13 @@ func runService(role string, args []string, settings config.Settings, stderr io.
 	return serviceErr
 }
 
-func newWorkerPool(st store.Store, settings config.Settings, logger *slog.Logger, webhook *alerts.Webhook) (*executor.Pool, error) {
+func newWorkerPool(st store.Store, settings config.Settings, logger *slog.Logger, resultHandler func(store.Job, store.Run)) (*executor.Pool, error) {
 	pool := executor.New(st, settings.Concurrency, logger)
 	if err := pool.SetLeaseTTL(settings.WorkerLease); err != nil {
 		return nil, err
 	}
-	if webhook != nil {
-		pool.SetResultHandler(webhook.Handler())
+	if resultHandler != nil {
+		pool.SetResultHandler(resultHandler)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -182,8 +204,8 @@ func newWorkerPool(st store.Store, settings config.Settings, logger *slog.Logger
 	return pool, nil
 }
 
-func runLocalNode(ctx context.Context, st store.Store, settings config.Settings, logger *slog.Logger, webhook *alerts.Webhook) error {
-	pool, err := newWorkerPool(st, settings, logger, webhook)
+func runLocalNode(ctx context.Context, st store.Store, settings config.Settings, logger *slog.Logger, resultHandler func(store.Job, store.Run)) error {
+	pool, err := newWorkerPool(st, settings, logger, resultHandler)
 	if err != nil {
 		return err
 	}

@@ -78,24 +78,59 @@ func New(rawURL, secret string, statuses []string, logger *slog.Logger) (*Webhoo
 	}, nil
 }
 
-func (w *Webhook) Notify(ctx context.Context, job store.Job, run store.Run) error {
-	if !w.statuses[run.Status] {
-		return nil
+// Accepts reports whether this webhook is configured for the run status.
+func (w *Webhook) Accepts(status string) bool { return w.statuses[status] }
+
+// AlertForRun snapshots the delivery-relevant fields of a completed run.
+// Commands, schedules, and logs are deliberately excluded.
+func AlertForRun(job store.Job, run store.Run) store.Alert {
+	finished := run.FinishedAt
+	if finished != nil {
+		utc := finished.UTC()
+		finished = &utc
 	}
-	ctx, cancel := context.WithTimeout(ctx, deliveryTimeout)
-	defer cancel()
-	payload := event{
-		EventID:    run.ID + ":" + run.Status,
-		Event:      "run." + run.Status,
-		JobID:      job.ID,
-		JobName:    job.Name,
+	return store.Alert{
+		ID:         run.ID + ":" + run.Status,
 		RunID:      run.ID,
+		JobID:      run.JobID,
+		JobName:    job.Name,
 		Status:     run.Status,
 		Attempt:    run.Attempt,
 		ExitCode:   run.ExitCode,
 		DurationMS: run.DurationMS,
 		Error:      run.Error,
-		FinishedAt: run.FinishedAt,
+		FinishedAt: finished,
+	}
+}
+
+func (w *Webhook) Notify(ctx context.Context, job store.Job, run store.Run) error {
+	return w.NotifyAlert(ctx, AlertForRun(job, run))
+}
+
+// NotifyAlert delivers an outbox entry. It uses the same payload, signature,
+// timeout, and retry rules as Notify.
+func (w *Webhook) NotifyAlert(ctx context.Context, alert store.Alert) error {
+	if !w.statuses[alert.Status] {
+		return nil
+	}
+	eventID := alert.ID
+	if eventID == "" {
+		eventID = alert.RunID + ":" + alert.Status
+	}
+	ctx, cancel := context.WithTimeout(ctx, deliveryTimeout)
+	defer cancel()
+	payload := event{
+		EventID:    eventID,
+		Event:      "run." + alert.Status,
+		JobID:      alert.JobID,
+		JobName:    alert.JobName,
+		RunID:      alert.RunID,
+		Status:     alert.Status,
+		Attempt:    alert.Attempt,
+		ExitCode:   alert.ExitCode,
+		DurationMS: alert.DurationMS,
+		Error:      alert.Error,
+		FinishedAt: alert.FinishedAt,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

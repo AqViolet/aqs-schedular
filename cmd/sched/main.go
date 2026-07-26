@@ -33,6 +33,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		return usageError()
 	}
+	if args[0] == "migrate" {
+		return migrateCommand(args[1:], stdout, stderr)
+	}
 	settings, err := config.Load()
 	if err != nil {
 		return err
@@ -73,7 +76,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 }
 
 func usageError() error {
-	return errors.New("usage: sched <daemon|scheduler|worker|serve|add|list|logs|run|retry|pause|resume|delete|prune>")
+	return errors.New("usage: sched <daemon|scheduler|worker|serve|add|list|logs|run|retry|pause|resume|delete|prune|migrate>")
 }
 
 func addJob(ctx context.Context, st store.Store, args []string, stdout, stderr io.Writer) error {

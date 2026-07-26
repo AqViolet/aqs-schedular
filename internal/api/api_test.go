@@ -491,3 +491,60 @@ func TestStoreErrors(t *testing.T) {
 		request(t, handler, endpoint.method, endpoint.path, endpoint.body, 500)
 	}
 }
+
+func TestPaginationAndQueryValidation(t *testing.T) {
+	st, handler := setup(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	job := store.Job{ID: "page-job", Name: "page", Schedule: "@daily", Command: "echo ok", Status: "active", CreatedAt: now, UpdatedAt: now}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 5; i++ {
+		run := store.Run{ID: "run-" + string(rune('0'+i)), JobID: job.ID, Status: "succeeded", Attempt: 1, ScheduledAt: now.Add(time.Duration(i) * time.Minute), CreatedAt: now.Add(time.Duration(i) * time.Minute)}
+		if err := st.CreateRun(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+		for seq := 1; seq <= 12; seq++ {
+			if run.ID == "run-5" {
+				if err := st.AppendLog(ctx, store.Log{RunID: run.ID, Stream: "stdout", Chunk: string(rune('a' + seq - 1)), Seq: int64(seq), CreatedAt: now}); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+	runs := decode[[]runDTO](t, request(t, handler, "GET", "/api/jobs/"+job.ID+"/runs?limit=2", "", 200))
+	if len(runs) != 2 || runs[0].ID != "run-5" || runs[1].ID != "run-4" {
+		t.Fatalf("first page=%+v", runs)
+	}
+	runs = decode[[]runDTO](t, request(t, handler, "GET", "/api/jobs/"+job.ID+"/runs?limit=2&offset=2", "", 200))
+	if len(runs) != 2 || runs[0].ID != "run-3" || runs[1].ID != "run-2" {
+		t.Fatalf("second page=%+v", runs)
+	}
+	jobs := decode[[]jobDTO](t, request(t, handler, "GET", "/api/jobs?limit=1", "", 200))
+	if len(jobs) != 1 || jobs[0].ID != job.ID {
+		t.Fatalf("job page=%+v", jobs)
+	}
+	logs := decode[[]logDTO](t, request(t, handler, "GET", "/api/runs/run-5/logs?limit=3", "", 200))
+	if len(logs) != 3 || logs[0].Seq != 10 || logs[2].Seq != 12 {
+		t.Fatalf("tail logs=%+v", logs)
+	}
+	logs = decode[[]logDTO](t, request(t, handler, "GET", "/api/runs/run-5/logs?limit=3&before=11", "", 200))
+	if len(logs) != 3 || logs[0].Seq != 8 || logs[2].Seq != 10 {
+		t.Fatalf("before logs=%+v", logs)
+	}
+	logs = decode[[]logDTO](t, request(t, handler, "GET", "/api/runs/run-5/logs?limit=2&after=9", "", 200))
+	if len(logs) != 2 || logs[0].Seq != 10 || logs[1].Seq != 11 {
+		t.Fatalf("after logs=%+v", logs)
+	}
+	for _, path := range []string{
+		"/api/jobs?limit=0", "/api/jobs?limit=1001", "/api/jobs?offset=-1",
+		"/api/jobs?limit=1&limit=2", "/api/jobs?status=active&status=paused",
+		"/api/jobs?unknown=1", "/api/status?limit=1",
+		"/api/jobs/" + job.ID + "/runs?limit=501",
+		"/api/runs/run-5/logs?limit=0", "/api/runs/run-5/logs?before=5&after=2",
+		"/api/runs/run-5/logs?before=-1",
+	} {
+		request(t, handler, "GET", path, "", 400)
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +21,15 @@ import (
 )
 
 const maxBodyBytes = 64 * 1024
+
+const (
+	defaultJobsLimit = 200
+	maxJobsLimit     = 1000
+	defaultRunsLimit = 50
+	maxRunsLimit     = 500
+	defaultLogsLimit = 1000
+	maxLogsLimit     = 10000
+)
 
 var jobStates = []string{"active", "paused", "dead"}
 var runStates = []string{"pending", "running", "succeeded", "failed", "dead", "missed"}
@@ -143,12 +153,95 @@ func listStatus(w http.ResponseWriter, r *http.Request, states []string) (string
 	return "", false
 }
 
+func allowedQuery(r *http.Request, names ...string) bool {
+	allowed := make(map[string]bool, len(names))
+	for _, name := range names {
+		allowed[name] = true
+	}
+	for name := range r.URL.Query() {
+		if !allowed[name] {
+			return false
+		}
+	}
+	return true
+}
+
+func queryInt(r *http.Request, name string, def, min, max int) (int, error) {
+	values, ok := r.URL.Query()[name]
+	if !ok {
+		return def, nil
+	}
+	if len(values) != 1 || values[0] == "" {
+		return 0, fmt.Errorf("%s must appear exactly once", name)
+	}
+	value, err := strconv.Atoi(values[0])
+	if err != nil || value < min || value > max {
+		return 0, fmt.Errorf("%s must be between %d and %d", name, min, max)
+	}
+	return value, nil
+}
+
+func queryInt64(r *http.Request, name string) (int64, error) {
+	values, ok := r.URL.Query()[name]
+	if !ok {
+		return 0, nil
+	}
+	if len(values) != 1 || values[0] == "" {
+		return 0, fmt.Errorf("%s must appear exactly once", name)
+	}
+	value, err := strconv.ParseInt(values[0], 10, 64)
+	if err != nil || value < 0 {
+		return 0, fmt.Errorf("%s must be a nonnegative integer", name)
+	}
+	return value, nil
+}
+
+func pageParams(w http.ResponseWriter, r *http.Request, defaultLimit, maxLimit int) (int, int, bool) {
+	limit, err := queryInt(r, "limit", defaultLimit, 1, maxLimit)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return 0, 0, false
+	}
+	offset, err := queryInt(r, "offset", 0, 0, 1_000_000)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return 0, 0, false
+	}
+	return limit, offset, true
+}
+
+func pageSlice[T any](items []T, limit, offset int) []T {
+	if offset >= len(items) {
+		return nil
+	}
+	items = items[offset:]
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	return items
+}
+
 func (a *api) listJobs(w http.ResponseWriter, r *http.Request) {
+	if !allowedQuery(r, "status", "limit", "offset") {
+		writeError(w, http.StatusBadRequest, "unsupported query parameters")
+		return
+	}
 	status, ok := listStatus(w, r, jobStates)
 	if !ok {
 		return
 	}
-	jobs, err := a.store.ListJobs(r.Context(), status)
+	limit, offset, ok := pageParams(w, r, defaultJobsLimit, maxJobsLimit)
+	if !ok {
+		return
+	}
+	var jobs []store.Job
+	var err error
+	if pager, ok := a.store.(store.JobPageStore); ok {
+		jobs, err = pager.ListJobsPage(r.Context(), status, limit, offset)
+	} else {
+		jobs, err = a.store.ListJobs(r.Context(), status)
+		jobs = pageSlice(jobs, limit, offset)
+	}
 	if err != nil {
 		a.storeError(w, r, err)
 		return
@@ -385,7 +478,15 @@ func (a *api) enqueue(w http.ResponseWriter, r *http.Request, jobID string, atte
 }
 
 func (a *api) listRuns(w http.ResponseWriter, r *http.Request) {
+	if !allowedQuery(r, "status", "limit", "offset") {
+		writeError(w, http.StatusBadRequest, "unsupported query parameters")
+		return
+	}
 	status, ok := listStatus(w, r, runStates)
+	if !ok {
+		return
+	}
+	limit, offset, ok := pageParams(w, r, defaultRunsLimit, maxRunsLimit)
 	if !ok {
 		return
 	}
@@ -394,7 +495,20 @@ func (a *api) listRuns(w http.ResponseWriter, r *http.Request) {
 		a.storeError(w, r, err)
 		return
 	}
-	runs, err := a.store.ListRuns(r.Context(), jobID)
+	var runs []store.Run
+	var err error
+	if pager, ok := a.store.(store.RunPageStore); ok {
+		runs, err = pager.ListRunsPage(r.Context(), jobID, status, limit, offset)
+	} else {
+		runs, err = a.store.ListRuns(r.Context(), jobID)
+		filtered := runs[:0]
+		for _, run := range runs {
+			if run.Status == status || status == "" {
+				filtered = append(filtered, run)
+			}
+		}
+		runs = pageSlice(filtered, limit, offset)
+	}
 	if err != nil {
 		a.storeError(w, r, err)
 		return
@@ -418,12 +532,41 @@ func (a *api) getRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) listLogs(w http.ResponseWriter, r *http.Request) {
+	if !allowedQuery(r, "limit", "before", "after") {
+		writeError(w, http.StatusBadRequest, "unsupported query parameters")
+		return
+	}
+	limit, err := queryInt(r, "limit", defaultLogsLimit, 1, maxLogsLimit)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	before, err := queryInt64(r, "before")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	after, err := queryInt64(r, "after")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if before > 0 && after > 0 {
+		writeError(w, http.StatusBadRequest, "before and after cannot be combined")
+		return
+	}
 	runID := r.PathValue("id")
 	if _, err := a.store.GetRun(r.Context(), runID); err != nil {
 		a.storeError(w, r, err)
 		return
 	}
-	logs, err := a.store.ListLogs(r.Context(), runID)
+	var logs []store.Log
+	if pager, ok := a.store.(store.LogPageStore); ok {
+		logs, err = pager.ListLogsPage(r.Context(), runID, limit, before, after)
+	} else {
+		logs, err = a.store.ListLogs(r.Context(), runID)
+		logs = pageLogs(logs, limit, before, after)
+	}
 	if err != nil {
 		a.storeError(w, r, err)
 		return
@@ -435,6 +578,29 @@ func (a *api) listLogs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+func pageLogs(logs []store.Log, limit int, before, after int64) []store.Log {
+	filtered := make([]store.Log, 0, len(logs))
+	for _, entry := range logs {
+		if after > 0 && entry.Seq <= after {
+			continue
+		}
+		if before > 0 && entry.Seq >= before {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	if after > 0 {
+		if len(filtered) > limit {
+			filtered = filtered[:limit]
+		}
+		return filtered
+	}
+	if len(filtered) > limit {
+		filtered = filtered[len(filtered)-limit:]
+	}
+	return filtered
 }
 
 func (a *api) retryRun(w http.ResponseWriter, r *http.Request) {
@@ -467,6 +633,10 @@ func counts(states []string) map[string]int {
 }
 
 func (a *api) status(w http.ResponseWriter, r *http.Request) {
+	if !allowedQuery(r) {
+		writeError(w, http.StatusBadRequest, "unsupported query parameters")
+		return
+	}
 	jobs, err := a.store.ListJobs(r.Context(), "")
 	if err != nil {
 		a.storeError(w, r, err)

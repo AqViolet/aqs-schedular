@@ -70,13 +70,15 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return deleteJob(ctx, st, args[1:], stdout)
 	case "prune":
 		return pruneRuns(ctx, st, args[1:], stdout, stderr)
+	case "backup":
+		return backupStore(ctx, st, args[1:], stdout, stderr)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
 }
 
 func usageError() error {
-	return errors.New("usage: sched <daemon|scheduler|worker|serve|add|list|logs|run|retry|pause|resume|delete|prune|migrate>")
+	return errors.New("usage: sched <daemon|scheduler|worker|serve|add|list|logs|run|retry|pause|resume|delete|prune|backup|migrate>")
 }
 
 func addJob(ctx context.Context, st store.Store, args []string, stdout, stderr io.Writer) error {
@@ -401,6 +403,30 @@ func pruneRuns(ctx context.Context, st store.Store, args []string, stdout, stder
 	} else {
 		fmt.Fprintf(stdout, "pruned %d runs scheduled before %s\n", count, cutoff.Format(time.RFC3339))
 	}
+	return nil
+}
+
+func backupStore(ctx context.Context, st store.Store, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("backup", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	output := fs.String("output", "", "destination file for the snapshot")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("backup does not accept positional arguments")
+	}
+	if strings.TrimSpace(*output) == "" {
+		return errors.New("backup requires --output")
+	}
+	backup, ok := st.(store.BackupStore)
+	if !ok {
+		return errors.New("backup is only supported for the SQLite store; use Redis persistence tooling instead")
+	}
+	if err := backup.Backup(ctx, *output); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "backed up SQLite store to %s\n", *output)
 	return nil
 }
 

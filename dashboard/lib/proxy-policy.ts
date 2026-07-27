@@ -35,15 +35,67 @@ export function backendBase(value: string): URL {
   return url;
 }
 
+function onlyKeys(search: URLSearchParams, keys: string[]): boolean {
+  return (
+    Array.from(search.keys()).every((key) => keys.includes(key)) &&
+    keys.every((key) => search.getAll(key).length <= 1)
+  );
+}
+
+function validInt(
+  search: URLSearchParams,
+  key: string,
+  min: number,
+  max: number,
+): boolean {
+  const values = search.getAll(key);
+  if (values.length === 0) return true;
+  if (values.length !== 1 || !/^\d+$/.test(values[0])) return false;
+  const value = Number(values[0]);
+  return value >= min && value <= max;
+}
+
+function validStatus(search: URLSearchParams, allowed: string[]): boolean {
+  const values = search.getAll("status");
+  if (values.length === 0) return true;
+  return values.length === 1 && allowed.includes(values[0]);
+}
+
 export function allowedQuery(path: string[], search: URLSearchParams): boolean {
   if (Array.from(search.keys()).length === 0) return true;
-  return (
-    path.length === 1 &&
-    path[0] === "jobs" &&
-    Array.from(search.keys()).length === 1 &&
-    search.has("status") &&
-    ["active", "paused", "dead"].includes(search.get("status") ?? "")
-  );
+  if (path.length === 1 && path[0] === "jobs") {
+    return (
+      onlyKeys(search, ["status", "limit", "offset"]) &&
+      validStatus(search, ["active", "paused", "dead"]) &&
+      validInt(search, "limit", 1, 1000) &&
+      validInt(search, "offset", 0, 1_000_000)
+    );
+  }
+  if (path.length === 3 && path[0] === "jobs" && path[2] === "runs") {
+    return (
+      onlyKeys(search, ["status", "limit", "offset"]) &&
+      validStatus(search, [
+        "pending",
+        "running",
+        "succeeded",
+        "failed",
+        "dead",
+        "missed",
+      ]) &&
+      validInt(search, "limit", 1, 500) &&
+      validInt(search, "offset", 0, 1_000_000)
+    );
+  }
+  if (path.length === 3 && path[0] === "runs" && path[2] === "logs") {
+    return (
+      onlyKeys(search, ["limit", "before", "after"]) &&
+      validInt(search, "limit", 1, 10000) &&
+      validInt(search, "before", 0, 1_000_000_000) &&
+      validInt(search, "after", 0, 1_000_000_000) &&
+      !(search.has("before") && search.has("after"))
+    );
+  }
+  return false;
 }
 
 function hostOrigin(host: string | null, protocol: string): URL | null {

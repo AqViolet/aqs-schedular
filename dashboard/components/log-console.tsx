@@ -17,9 +17,10 @@ export function LogConsole({
 }) {
   const [follow, setFollow] = useState(true);
   const [stream, setStream] = useState("all");
+  const [logLimit, setLogLimit] = useState(1000);
   const details = useResource<Run>(`runs/${encodeURIComponent(run.id)}`, 3000);
   const logs = useResource<Log[]>(
-    `runs/${encodeURIComponent(run.id)}/logs`,
+    `runs/${encodeURIComponent(run.id)}/logs?limit=${logLimit}`,
     follow ? 2000 : 0,
   );
   const current = details.data ?? run;
@@ -132,6 +133,16 @@ export function LogConsole({
               <option value="stdout">stdout</option>
               <option value="stderr">stderr</option>
             </select>
+            {(logs.data?.length ?? 0) >= logLimit && logLimit < 10000 && (
+              <button
+                className="button compact"
+                onClick={() =>
+                  setLogLimit((value) => Math.min(10000, value + 1000))
+                }
+              >
+                Load earlier
+              </button>
+            )}
             <button
               className={`follow-button ${follow ? "following" : ""}`}
               aria-pressed={follow}

@@ -26,8 +26,9 @@ export function JobDetail({
   mutate: Mutate;
   onDeleted: () => void;
 }) {
+  const [runLimit, setRunLimit] = useState(50);
   const runs = useResource<Run[]>(
-    `jobs/${encodeURIComponent(job.id)}/runs`,
+    `jobs/${encodeURIComponent(job.id)}/runs?limit=${runLimit}`,
     5000,
   );
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -205,6 +206,16 @@ export function JobDetail({
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+        {sortedRuns.length >= runLimit && runLimit < 500 && (
+          <div className="empty-action">
+            <button
+              className="button compact"
+              onClick={() => setRunLimit((value) => Math.min(500, value + 50))}
+            >
+              Load more runs
+            </button>
           </div>
         )}
       </section>

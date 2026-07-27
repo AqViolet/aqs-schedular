@@ -12,7 +12,8 @@ import { Badge, Empty, ErrorNotice, Icon, Loading } from "./ui";
 type Filter = "all" | JobStatus;
 
 export function Dashboard() {
-  const jobs = useResource<Job[]>("jobs", 5000);
+  const [jobLimit, setJobLimit] = useState(200);
+  const jobs = useResource<Job[]>(`jobs?limit=${jobLimit}`, 5000);
   const status = useResource<SchedulerStatus>("status", 5000);
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
@@ -388,9 +389,20 @@ export function Dashboard() {
                   </table>
                 </div>
               )}
+              {allJobs.length >= jobLimit && jobLimit < 1000 && (
+                <div className="empty-action">
+                  <button
+                    className="button compact"
+                    onClick={() => setJobLimit((value) => Math.min(1000, value + 200))}
+                  >
+                    Load more jobs
+                  </button>
+                </div>
+              )}
               <footer className="panel-footer">
                 <span>
                   {filtered.length} of {allJobs.length} jobs
+                  {allJobs.length >= jobLimit ? " (bounded view)" : ""}
                 </span>
                 <span>Times shown in your local timezone</span>
               </footer>

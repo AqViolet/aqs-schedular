@@ -189,6 +189,19 @@ test("forwards the allowlisted API with server bearer token, never browser crede
   assert.equal(response.headers.get("cache-control"), "no-store");
 });
 
+test("forwards bounded pagination queries unchanged", async () => {
+  for (const path of [
+    "/api/scheduler/jobs?limit=10&offset=20",
+    "/api/scheduler/jobs/job-1/runs?status=failed&limit=25&offset=50",
+    "/api/scheduler/runs/run-1/logs?limit=200&before=900",
+    "/api/scheduler/runs/run-1/logs?after=10",
+  ]) {
+    const response = await request(path);
+    assert.equal(response.status, 200);
+    assert.equal(received.at(-1)?.path, path.replace("/api/scheduler", "/api"));
+  }
+});
+
 test("rejects non-allowlisted paths, methods, queries, and cross-origin mutations before forwarding", async () => {
   const count = received.length;
   for (const [path, options, expected] of [
@@ -196,6 +209,8 @@ test("rejects non-allowlisted paths, methods, queries, and cross-origin mutation
     ["/api/scheduler/jobs/bad%2Fid", {}, 404],
     ["/api/scheduler/jobs?url=http://evil.test", {}, 400],
     ["/api/scheduler/jobs?status=active&status=dead", {}, 400],
+    ["/api/scheduler/jobs?limit=0", {}, 400],
+    ["/api/scheduler/runs/run-1/logs?before=1&after=2", {}, 400],
     [
       "/api/scheduler/status",
       { method: "POST", headers: { Origin: origin } },

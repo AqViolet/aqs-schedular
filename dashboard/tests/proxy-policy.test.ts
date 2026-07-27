@@ -49,20 +49,66 @@ test("rejects arbitrary endpoints, traversal, URLs, invalid IDs, and extra segme
   }
 });
 
-test("only permits one documented jobs status query", () => {
+test("permits only documented pagination and status queries", () => {
   assert.equal(allowedQuery(["jobs"], new URLSearchParams()), true);
   for (const state of ["active", "paused", "dead"])
     assert.equal(
       allowedQuery(["jobs"], new URLSearchParams({ status: state })),
       true,
     );
+  assert.equal(allowedQuery(["jobs"], new URLSearchParams("limit=10")), true);
+  assert.equal(
+    allowedQuery(["jobs"], new URLSearchParams("offset=20&limit=10")),
+    true,
+  );
   for (const query of [
     "url=https://evil.test",
     "status=unknown",
     "status=active&status=dead",
     "status=active&token=secret",
+    "limit=0",
+    "limit=1001",
+    "offset=-1",
+    "limit=10&limit=20",
   ]) {
     assert.equal(allowedQuery(["jobs"], new URLSearchParams(query)), false);
+  }
+  assert.equal(
+    allowedQuery(
+      ["jobs", "job-1", "runs"],
+      new URLSearchParams("status=failed&limit=25&offset=50"),
+    ),
+    true,
+  );
+  assert.equal(
+    allowedQuery(["jobs", "job-1", "runs"], new URLSearchParams("limit=501")),
+    false,
+  );
+  assert.equal(
+    allowedQuery(
+      ["runs", "run-1", "logs"],
+      new URLSearchParams("limit=200&before=900"),
+    ),
+    true,
+  );
+  assert.equal(
+    allowedQuery(
+      ["runs", "run-1", "logs"],
+      new URLSearchParams("after=10"),
+    ),
+    true,
+  );
+  for (const query of [
+    "status=active",
+    "before=5&after=2",
+    "limit=10001",
+    "before=-1",
+    "after=x",
+  ]) {
+    assert.equal(
+      allowedQuery(["runs", "run-1", "logs"], new URLSearchParams(query)),
+      false,
+    );
   }
   assert.equal(
     allowedQuery(["runs", "x", "logs"], new URLSearchParams("status=active")),

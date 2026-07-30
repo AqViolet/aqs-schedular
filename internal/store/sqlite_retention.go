@@ -19,7 +19,7 @@ func (s *SQLite) PruneRuns(ctx context.Context, before time.Time, statuses []str
 		args = append(args, status)
 	}
 	args = append(args, before.UTC().Unix())
-	where := `status IN (` + strings.Join(placeholders, ",") + `) AND scheduled_at < ?
+	where := `status IN (` + strings.Join(placeholders, ",") + `) AND COALESCE(finished_at, scheduled_at) < ?
 		AND NOT EXISTS (SELECT 1 FROM alert_outbox a WHERE a.run_id = runs.id AND a.delivered_at IS NULL AND a.abandoned_at IS NULL)`
 	if dryRun {
 		var count int64

@@ -19,6 +19,11 @@ func TestPruneRunsPreservesLiveAndPendingAlerts(t *testing.T) {
 			alerting := seedAlertRun(t, st, old, "old-alert", "failed")
 			seedAlertRun(t, st, now.Add(-time.Minute), "new-succeeded", "succeeded")
 			seedAlertRun(t, st, old, "old-pending", "pending")
+			recentFinish := seedAlertRun(t, st, old, "old-scheduled-recent-finish", "succeeded")
+			recentFinish.FinishedAt = &now
+			if err := st.UpdateRun(ctx, recentFinish); err != nil {
+				t.Fatal(err)
+			}
 			if err := alerts.EnqueueAlert(ctx, Alert{ID: alerting.ID + ":failed", RunID: alerting.ID, JobID: alerting.JobID, JobName: "nightly", Status: "failed", Attempt: 1, CreatedAt: now, NextAttemptAt: now}); err != nil {
 				t.Fatal(err)
 			}
@@ -39,7 +44,7 @@ func TestPruneRunsPreservesLiveAndPendingAlerts(t *testing.T) {
 					t.Fatalf("prunable run %s remains: %v", id, err)
 				}
 			}
-			for _, id := range []string{"old-alert", "new-succeeded", "old-pending"} {
+			for _, id := range []string{"old-alert", "new-succeeded", "old-pending", "old-scheduled-recent-finish"} {
 				if _, err := st.GetRun(ctx, id); err != nil {
 					t.Fatalf("preserved run %s missing: %v", id, err)
 				}

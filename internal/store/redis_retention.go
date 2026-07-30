@@ -41,7 +41,11 @@ func (s *Redis) PruneRuns(ctx context.Context, before time.Time, statuses []stri
 		if err := json.Unmarshal([]byte(raw), &run); err != nil {
 			return 0, err
 		}
-		if !allowed[run.Status] || !run.ScheduledAt.Before(before) || pending[run.ID] {
+		at := run.ScheduledAt
+		if run.FinishedAt != nil {
+			at = *run.FinishedAt
+		}
+		if !allowed[run.Status] || !at.Before(before) || pending[run.ID] {
 			continue
 		}
 		ids = append(ids, run.ID)

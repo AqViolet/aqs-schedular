@@ -399,9 +399,9 @@ func pruneRuns(ctx context.Context, st store.Store, args []string, stdout, stder
 		return err
 	}
 	if *dryRun {
-		fmt.Fprintf(stdout, "would prune %d runs scheduled before %s\n", count, cutoff.Format(time.RFC3339))
+		fmt.Fprintf(stdout, "would prune %d runs older than %s\n", count, cutoff.Format(time.RFC3339))
 	} else {
-		fmt.Fprintf(stdout, "pruned %d runs scheduled before %s\n", count, cutoff.Format(time.RFC3339))
+		fmt.Fprintf(stdout, "pruned %d runs older than %s\n", count, cutoff.Format(time.RFC3339))
 	}
 	return nil
 }

@@ -12,7 +12,7 @@ go build ./cmd/sched
 In another terminal, add a job and inspect its output:
 
 ```sh
-./sched add --schedule "*/1 * * * *" --name "ping" --timeout 10 -- sh -c 'echo hello'
+./sched add --schedule "*/1 * * * *" --name "ping" --timeout 10 -- echo hello
 ./sched list
 ./sched logs <job-id>
 ```
@@ -25,7 +25,7 @@ For a one-shot job, use an RFC3339 timestamp:
 ./sched add --at "2026-10-01T15:00:00Z" --name "one-shot" -- echo done
 ```
 
-Commands are run through `sh -c`. Put `--` between scheduler options and the command when needed to separate command arguments from scheduler flags.
+Commands are run through `sh -c`. Put `--` between scheduler options and the command when needed to separate command arguments from scheduler flags. Quote the complete shell command as one argument when it contains pipes, redirection, or its own quoting, for example `sched add --schedule '@daily' --name report -- 'date; echo done'`.
 
 ## Architecture
 

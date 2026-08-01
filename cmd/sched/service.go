@@ -68,6 +68,9 @@ func runService(role string, args []string, settings config.Settings, stderr io.
 		if alertStore, ok := st.(store.AlertStore); ok {
 			cfg := alerts.DefaultOutboxConfig()
 			cfg.MaxAttempts, cfg.RetryBase = settings.AlertMax, settings.AlertRetry
+			if cfg.RetryMax < cfg.RetryBase {
+				cfg.RetryMax = cfg.RetryBase
+			}
 			cfg.Lease, cfg.SweepLookback = settings.AlertLease, settings.AlertLookback
 			outbox, err = alerts.NewOutbox(alertStore, webhook, cfg, logger)
 			if err != nil {

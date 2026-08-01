@@ -24,6 +24,7 @@ func (s *SQLite) Backup(ctx context.Context, path string) error {
 		return err
 	}
 	if _, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, path); err != nil {
+		_ = os.Remove(path)
 		return fmt.Errorf("create SQLite backup: %w", err)
 	}
 	return nil
